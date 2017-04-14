@@ -1,6 +1,8 @@
 Cubical Type Theory
 ===================
 
+Forked from the origin as a playground for a pretty-monadic-printer.
+
 Experimental implementation of [Cubical Type
 Theory](http://www.cse.chalmers.se/~coquand/cubicaltt.pdf) in which
 the user can directly manipulate n-dimensional cubes. The language
