@@ -1,16 +1,41 @@
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
-module CTT where
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings #-}
+
+module CTT_back where
 
 import Control.Applicative
+import Control.Applicative
+import Control.Monad.Reader
+import Control.Monad.Writer hiding (Sum)
+import Control.Monad.State
+import Control.Monad.RWS hiding (Sum)
 import Data.List
 import Data.Maybe
-import Data.Map (Map,(!),filterWithKey,elems)
+import Data.Map (Map,(!),filterWithKey,elems,toList)
 import qualified Data.Map as Map
-import Text.PrettyPrint as PP
+-- import Text.PrettyPrint as PP
 import Data.Set (Set)
 import qualified Data.Set as Set
+import Data.String (IsString(..))
+import Data.Text (Text)
+import qualified Data.Text as T
 
-import Connections
+import Connections hiding (showSystem)
+
+import System.Console.ANSI
+
+import Pretty
+import Words
+import Exts.ExtPrec hiding (parens)
+import Rendering.RenderConsole
 
 --------------------------------------------------------------------------------
 -- | Terms
@@ -27,13 +52,15 @@ type Tele   = [(Ident,Ter)]
 
 data Label = OLabel LIdent Tele -- Object label
            | PLabel LIdent Tele [Name] (System Ter) -- Path label
-  deriving (Eq,Show)
+  deriving (Eq)
+  --deriving (Eq,Show)
 
 -- OBranch of the form: c x1 .. xn -> e
 -- PBranch of the form: c x1 .. xn i1 .. im -> e
 data Branch = OBranch LIdent [Ident] Ter
             | PBranch LIdent [Ident] [Name] Ter
-  deriving (Eq,Show)
+  deriving (Eq)
+  --deriving (Eq,Show)
 
 -- Declarations: x : A = e
 -- A group of mutual declarations is identified by its location. It is used to
@@ -217,7 +244,7 @@ mkVarNice xs x = VVar (head (ys \\ xs))
 
 unCon :: Val -> [Val]
 unCon (VCon _ vs) = vs
-unCon v           = error $ "unCon: not a constructor: " ++ show v
+unCon v           = error $ "unCon: not a constructor: " -- ++ show v
 
 isCon :: Val -> Bool
 isCon VCon{} = True
@@ -235,7 +262,7 @@ data Ctxt = Empty
           | Upd Ident Ctxt
           | Sub Name Ctxt
           | Def Loc [Decl] Ctxt
-  deriving (Show)
+  -- deriving (Pretty)
 
 instance Eq Ctxt where
     c == d = case (c, d) of
@@ -304,6 +331,7 @@ domainEnv (rho,_,_,_) = domCtxt rho
           Sub i e    -> i : domCtxt e
 
 -- Extract the context from the environment, used when printing holes
+  {-
 contextOfEnv :: Env -> [String]
 contextOfEnv rho = case rho of
   (Empty,_,_,_)               -> []
@@ -311,10 +339,352 @@ contextOfEnv rho = case rho of
   (Upd x e,v:vs,fs,os)        -> (x ++ " = " ++ show v) : contextOfEnv (e,vs,fs,os)
   (Def _ _ e,vs,fs,os)        -> contextOfEnv (e,vs,fs,os)
   (Sub i e,vs,phi:fs,os)      -> (show i ++ " = " ++ show phi) : contextOfEnv (e,vs,fs,os)
+-}
+contextOfEnv :: Env -> [Doc]
+contextOfEnv rho = case rho of
+  (Empty,_,_,_)               -> []
+  (Upd x e,VVar n t:vs,fs,os) -> ((text (T.pack (n ++ " : "))) >> (ppVal t)) : contextOfEnv (e,vs,fs,os)
+  (Upd x e,v:vs,fs,os)        -> ((text (T.pack (x ++ " = "))) >> (ppVal v)) : contextOfEnv (e,vs,fs,os)
+  (Def _ _ e,vs,fs,os)        -> contextOfEnv (e,vs,fs,os)
+  (Sub i e,vs,phi:fs,os)      -> text (T.pack (show i ++ " = " ++ show phi)) : contextOfEnv (e,vs,fs,os)
 
 --------------------------------------------------------------------------------
 -- | Pretty printing
 
+data Ann = Class Text | Tooltip Text
+  deriving (Eq, Ord, Show)
+
+idAnn :: Ann
+idAnn = Class "id"
+
+glueAnn :: Ann
+glueAnn = Class "glue"
+
+pathAnn :: Ann
+pathAnn = Class "path"
+
+holeAnn :: Ann
+holeAnn = Class "hole"
+
+updateColor :: forall ann . StateT [Ann] IO ()
+updateColor =
+  lift . setSGR =<< mconcat . map toSGR . reverse <$> get
+
+openTag :: Ann -> StateT [Ann] IO ()
+openTag ann = modify (ann:) >> updateColor
+
+closeTag :: Ann -> StateT [Ann] IO ()
+closeTag _  = modify tail   >> updateColor
+
+
+renderAnnotation :: Ann -> StateT [Ann] IO () -> StateT [Ann] IO ()
+renderAnnotation a o = openTag a >> o >> closeTag a
+
+type TEnv = Map Text Text
+
+tEnv0 :: TEnv
+tEnv0 = Map.empty
+
+  {-
+env0 :: Monoid fmt => PEnv Int a fmt
+env0 = PEnv
+  { maxWidth = 80
+  , maxRibbon = 60
+  , layout = Break
+  , failure = CantFail
+  , nesting = 0
+  , formatting = mempty
+  , formatAnn = const mempty
+  }
+
+state0 :: PState Int ()
+state0 = PState
+  { curLine = []
+  }
+-}
+
+  {-
+newtype DocM a = DocM { unDocM :: RWST (PEnv Int Ann ()) (POut Int Ann) (PState Int ()) Maybe a }
+  deriving
+    ( Functor, Applicative, Monad
+    , MonadReader (PEnv Int Ann ()), MonadWriter (POut Int Ann), MonadState (PState Int ()), Alternative
+    )
+instance MonadPretty Int Ann () DocM
+-}
+newtype DocM a = DocM { unDocM :: PrecT Ann (RWST (PEnv Int Ann ()) (POut Int Ann) (PState Int ()) (ReaderT TEnv Maybe)) a }
+  deriving
+    ( Functor, Applicative, Monad, Alternative
+    , MonadReader (PEnv Int Ann ()), MonadWriter (POut Int Ann), MonadState (PState Int ())
+    , MonadReaderPrec Ann
+    )
+instance MonadPretty Int Ann () DocM
+instance MonadPrettyPrec Int Ann () DocM
+
+instance Measure Int () DocM where
+  measure = return . runIdentity . measure
+
+  {-
+runDocM :: PEnv Int Ann () -> PState Int () -> DocM a -> Maybe (PState Int (), POut Int Ann, a)
+runDocM e s d = (\(a,s',o) -> (s',o,a)) <$> runRWST (unDocM d) e s
+-}
+
+runDocM :: PEnv Int Ann () -> PrecEnv Ann -> TEnv -> PState Int () -> DocM a -> Maybe (PState Int (), POut Int Ann, a)
+runDocM e pe te s d = (\(a,s',o) -> (s',o,a)) <$> runReaderT (runRWST (runPrecT pe $ unDocM d) e s) te
+
+type Doc = DocM ()
+
+execDoc :: Doc -> POut Int Ann
+execDoc d =
+  let rM = runDocM env0 precEnv0 tEnv0 state0 d
+  in case rM of
+    Nothing -> PAtom $ AChunk $ CText "<internal pretty printing error>"
+    Just (_, o, ()) -> o
+
+instance IsString Doc where
+  fromString = text . fromString
+
+instance Monoid Doc where
+  mempty = return ()
+  mappend = (>>)
+
+  {-
+instance Show Doc where
+  show = T.unpack . (render renderAnnotation ). execDoc
+-}
+
+class Pretty a where
+  pretty :: a -> Doc
+
+instance Pretty Doc where
+  pretty = id
+
+instance Pretty Text where
+  pretty = text . T.pack . show
+
+instance Pretty Env where
+  pretty = ppEnv True
+
+  {-
+instance Show Env where
+  show = show . pretty
+-}
+
+ppEnv :: Bool -> Env -> Doc
+ppEnv b e =
+  let
+    names x  = if b then text x >> space 1 >> equals else mempty
+    par x    = if b then parens x else x
+    com      = if b then comma else mempty
+    ppEnv1 e = case e of
+      (Upd x env,u:us,fs,os) ->
+        ppEnv1 (env,us,fs,os) >> space 1 >> (names $ T.pack x) >> space 1 >> ppVal1 u >> com
+      (Sub i env,us,phi:fs,os) ->
+        ppEnv1 (env,us,fs,os) >> space 1 >> (names $ T.pack (show i)) >> space 1 >> (text $ T.pack (show phi)) >> com
+      (Def _ _ env,vs,fs,os) -> ppEnv1 (env,vs,fs,os)
+      _ -> ppEnv b e
+  in case e of
+    (Empty,_,_,_)            -> mempty
+    (Def _ _ env,vs,fs,os)   -> ppEnv b (env,vs,fs,os)
+    (Upd x env,u:us,fs,os)   ->
+      par $ ppEnv1 (env,us,fs,os) >> space 1 >> (names $ T.pack x) >> space 1 >> ppVal1 u
+    (Sub i env,us,phi:fs,os) ->
+      par $ ppEnv1 (env,us,fs,os) >> space 1 >> (names $ T.pack (show i)) >> space 1 >> (text $ T.pack (show phi))
+
+ppFormula :: Formula -> Doc
+ppFormula phi = case phi of
+  _ :\/: _ -> parens (text $ T.pack (show phi))
+  _ :/\: _ -> parens (text $ T.pack (show phi))
+  _ -> text $ T.pack $ show phi
+
+
+ppListSystem :: Pretty a => [(Face , a)] -> Doc
+ppListSystem [] = text "[]"
+showListSystem ts =
+  text "[ " >>
+  text (T.pack ("[ " ++ intercalate ", " [ showFace alpha ++ " -> " ++ show u
+                           | (alpha,u) <- ts ] ++ " ]")) >>
+  text " ]"
+
+ppSystem :: Pretty a => System a -> Doc
+ppSystem = ppListSystem . toList
+
+ppTer :: Ter -> Doc
+ppTer v = case v of
+  U                 -> char 'U'
+  App e0 e1         -> grouped $ ppTer e0 >> newline >> ppTer1 e1
+  Pi e0             -> grouped $ text "Pi" >> space 1 >> ppTer e0
+  Lam x t e         -> grouped $ do
+                         char '\\'
+                         parens $ do
+                           (text $ T.pack x)
+                           space 1 >> colon >> space 1
+                           ppTer t
+                         space 1
+                         text "->"
+                         nest 2 $ do newline; ppTer e
+  Fst e             -> ppTer1 e >> text ".1"
+  Snd e             -> ppTer1 e >> text ".2"
+  Sigma e0          -> grouped $ text "Sigma" >> space 1 >> ppTer1 e0
+  Where e d         -> ppTer e >> newline >> text "where" >> newline >> ppDecls d
+  Var x             -> annotate idAnn $ text $ T.pack x
+  Con c es          -> (text $ T.pack c) >> space 1 >> ppTers es
+  PCon c a es phis  -> grouped $ do
+                         text $ T.pack c
+                         space 1
+                         braces $ ppTer a
+                         space 1
+                         ppTers es
+                         space 1
+                         hsep $ map ((char '@' >> space 1 >> ) . ppFormula) phis
+  -- PCon c a es phis  -> (text $ T.pack c) >> space 1 >> braces (ppTer a) >> space 1 >> ppTers es >> space 1 >> hsep (map ((char '@' >> space 1 >> ) . ppFormula) phis)
+  Split f _ _ _     -> text $ T.pack f
+  Sum _ n _         -> text $ T.pack n
+  HSum _ n _        -> text $ T.pack n
+  Undef{}           -> text "undefined"
+  Hole{}            -> annotate holeAnn $ text "?"
+  PathP e0 e1 e2    -> annotate pathAnn $ text "PathP" >> space 1 >> ppTers [e0,e1,e2]
+  PLam i e          -> char '<' >> (text $ T.pack (show i)) >> char '>' >> space 1 >> ppTer e
+  AppFormula e phi  -> ppTer1 e >> space 1 >> char '@' >> space 1 >> ppFormula phi
+  Comp e t ts       -> text "comp" >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
+  Fill e t ts       -> text "fill" >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
+  Glue a ts         -> text "Glue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  GlueElem a ts     -> text "glue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  UnGlueElem a ts   -> text "unglue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  Id a u v          -> grouped $ text "Id" >> space 1 >> ppTers [a,u,v]
+  IdPair b ts       -> text "IdC" >> space 1 >> ppTer b >> space 1 >> ppSystem ts
+  IdJ a t c d x p   -> grouped $ text "IdJ" >> space 1 >> ppTers [a,t,c,d,x,p]
+ 
+ppTer1 :: Ter -> Doc
+ppTer1 t = case t of
+  U        -> char 'U'
+  Con c [] -> text $ T.pack c
+  Var{}    -> ppTer t
+  Undef{}  -> ppTer t
+  Hole{}   -> ppTer t
+  Split{}  -> ppTer t
+  Sum{}    -> ppTer t
+  HSum{}   -> ppTer t
+  Fst{}    -> ppTer t
+  Snd{}    -> ppTer t
+  _        -> parens (ppTer t)
+  
+
+ppTers :: [Ter] -> Doc
+ppTers = vsep . map ppTer1
+
+ppDecls :: Decls -> Doc
+ppDecls ds = case ds of
+  MutualDecls _ defs -> hsep $ punctuate comma [(text $ T.pack x) >> space 1 >> equals >> space 1 >> ppTer d | (x,(_,d)) <- defs]
+  OpaqueDecl i -> text "opaque" >> space 1 >> (text $ T.pack i)
+  TransparentDecl i -> text "transparent" >> space 1 >> (text $ T.pack i)
+  TransparentAllDecl -> text "transparent_all"
+
+instance Pretty Ter where
+  pretty = ppTer
+
+  {-
+instance Show Ter where
+  show = show . pretty 
+-}
+
+ppLoc :: Loc -> Doc
+ppLoc (Loc name (i,j)) = text $ T.pack (show (i,j) ++ " in " ++ name)
+
+instance Pretty Loc where
+  pretty = ppLoc
+
+  {-
+instance Show Loc where
+  show = show . pretty 
+-}
+
+ppVal :: Val -> Doc
+ppVal v = case v of
+  VU                     -> char 'U'
+  Ter t@Sum{} rho        -> ppTer t >> space 1 >> ppEnv False rho 
+  Ter t@HSum{} rho       -> ppTer t >> space 1 >> ppEnv False rho
+  Ter t@Split{} rho      -> ppTer t >> space 1 >> ppEnv False rho
+  Ter t rho              -> ppTer t >> space 1 >> ppEnv True rho 
+  VCon c us              -> (text $ T.pack c) >> space 1 >> ppVals us
+  VPCon c a us phis      -> (text $ T.pack c) >> space 1 >> braces (ppVal a) >> space 1 >> ppVals us >> hsep (map ((char '@' >> space 1 >>) . ppFormula) phis)
+  VHComp v0 v1 vs        -> text "hComp" >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
+  VPi a l@(VLam x t b)
+    | "_" `isPrefixOf` x -> ppVal1 a >> space 1 >> text "->" >> space 1 >> ppVal1 b
+    | otherwise          -> char '(' >> ppLam (VPi a l)
+  VPi a b                -> text "Pi" >> space 1 >> ppVals [a,b] 
+  VPair u v              -> parens (ppVal u >> comma >> ppVal v)
+  VSigma u v             -> text "Sigma" >> space 1 >> ppVals [u,v]
+  VApp u v               -> ppVal u >> space 1 >> ppVal1 v
+  VLam{}                 -> text "\\(" >> ppLam v
+  VPLam{}                -> char '<' >> ppPLam v
+  VSplit u v             -> ppVal u >> space 1 >> ppVal1 v
+  VVar x _               -> text $ T.pack x
+  VOpaque x _            -> text $ T.pack x
+  VFst u                 -> ppVal1 u >> space 1 >> text ".1"
+  VSnd u                 -> ppVal1 u >> space 2 >> text ".2"
+  VPathP v0 v1 v2        -> text "PathP" >> space 1 >> ppVals [v0,v1,v2]
+  VAppFormula v phi      -> ppVal v >> space 1 >> char '@' >> ppFormula phi
+  VComp v0 v1 vs         -> text "comp" >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
+  VGlue a ts             -> text "Glue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VGlueElem a ts         -> text "glue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VUnGlueElem a ts       -> text "unglue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VUnGlueElemU v b es    -> text "unglue U" >> space 1 >> ppVals [v,b] >> ppSystem es
+  VCompU a ts            -> text "comp (<_> U)" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VId a u v              -> text "Id" >> space 1 >> ppVals [a,u,v]
+  VIdPair b ts           -> text "IdC" >> space 1 >> ppVal1 b >> ppSystem ts
+  VIdJ a t c d x p       -> text "IdJ" >> space 1 >> ppVals [a,t,c,d,x,p]
+
+ppLam :: Val -> Doc
+ppLam e = case e of
+  VLam x t a@(VLam _ t' _)
+    | t == t'   -> (text $ T.pack x) >> space 1 >> ppLam a
+    | otherwise -> (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal a
+  VPi _ (VLam x t a@(VPi _ (VLam _ t' _)))
+    | t == t'   -> (text $ T.pack x) >> space 1 >> ppLam a
+    | otherwise -> (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal a
+  VLam x t e ->
+    (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal e
+  VPi _ (VLam x t e) ->
+    (text $ T.pack x) >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >>  text "->" >> space 1 >> ppVal e
+  _ -> ppVal e
+
+ppPLam :: Val -> Doc
+ppPLam e = case e of
+  VPLam i a@VPLam{} -> (text $ T.pack (show i)) >> space 1 >> ppPLam a
+  VPLam i a -> (text $ T.pack (show i)) >> char '>' >> space 1 >> ppVal a
+  _ -> ppVal e
+
+ppVals :: [Val] -> Doc
+ppVals = hsep . map ppVal1
+
+ppVal1 :: Val -> Doc
+ppVal1 v = case v of
+  VU                -> ppVal v
+  VCon c []         -> ppVal v
+  VVar{}            -> ppVal v
+  VFst{}            -> ppVal v
+  VSnd{}            -> ppVal v
+  Ter t@Sum{} rho   -> ppTer t >> space 1 >> ppEnv False rho
+  Ter t@HSum{} rho  -> ppTer t >> space 1 >> ppEnv False rho
+  Ter t@Split{} rho -> ppTer t >> space 1 >> ppEnv False rho
+  Ter t rho         -> ppTer t >> space 1 >> ppEnv True rho
+  _                 -> parens (ppVal v)
+
+instance Pretty Val where
+  pretty = ppVal
+
+  {-
+instance Show Val where
+  show = show . pretty 
+-}
+
+toSGR :: Ann -> [SGR]
+toSGR _ = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
+
+dumpTer :: Ter -> IO ()
+dumpTer = dumpDoc toSGR renderAnnotation . execDoc . pretty
+
+{- 
 instance Show Env where
   show = render . showEnv True
 
@@ -492,3 +862,5 @@ showVal1 v = case v of
 
 showVals :: [Val] -> Doc
 showVals = hsep . map showVal1
+
+-}

@@ -203,7 +203,7 @@ happyError ts =
   case ts of
     [] -> []
     [Err _] -> " due to lexer error"
-    _ -> " before " ++ unwords (map (id . prToken) (take 4 ts))
+    t:_ -> " before `" ++ id(prToken t) ++ "'"
 
 myLexer = tokens
 }

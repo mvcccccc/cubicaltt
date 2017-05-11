@@ -46,7 +46,7 @@ packages:
 - location: .
 - location:
     git: https://github.com/davdar/pretty-monadic-printer
-    commit: HEAD
+    commit: 6336bff842964919060eb8507166f384ba6521a2
   extra-dep: true
     
 # Override default flag values for local packages and extra-deps
