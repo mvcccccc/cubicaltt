@@ -1,3 +1,4 @@
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeSynonymInstances, FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -15,6 +16,7 @@ import Control.Applicative
 import Control.Monad.Reader
 import Control.Monad.Writer hiding (Sum)
 import Control.Monad.State
+import Control.Monad.Except
 import Control.Monad.RWS hiding (Sum)
 import Control.Monad.Identity
 import Data.List
@@ -33,11 +35,13 @@ import Connections
 import Text.PrettyPrint.Final
 import Text.PrettyPrint.Final.Words
 import qualified Text.PrettyPrint.Final.Words as W
+import Text.PrettyPrint.Final.Extensions.Precedence
 import Text.PrettyPrint.Final.Rendering.Console
 
-data Ann = ID_ANN | FORMULA_ANN | SYSTEM_ANN | LAM_ANN
+data Ann = Kwd | HoleAnn | VarAnn Text | Ctor | Elim | TCtor
   deriving (Eq, Ord, Show)
 
+{-
 env0 :: Monoid fmt => PEnv Int a fmt
 env0 = PEnv
   { maxWidth = 80
@@ -53,7 +57,8 @@ state0 :: PState Int ()
 state0 = PState
   { curLine = []
   }
-{-
+-}
+
 newtype DocM a = DocM { unDocM :: PrecT Ann (RWST (PEnv Int Ann ()) (POut Int Ann) (PState Int ()) (ReaderT TEnv Maybe)) a }
   deriving
     ( Functor, Applicative, Monad, Alternative
@@ -62,7 +67,8 @@ newtype DocM a = DocM { unDocM :: PrecT Ann (RWST (PEnv Int Ann ()) (POut Int An
     )
 instance MonadPretty Int Ann () DocM
 instance MonadPrettyPrec Int Ann () DocM
--}
+
+{-
 newtype DocM a = DocM { unDocM :: RWST (PEnv Int Ann ()) (POut Int Ann) (PState Int ()) Maybe a }
   deriving
     ( Functor, Applicative, Monad
@@ -70,6 +76,7 @@ newtype DocM a = DocM { unDocM :: RWST (PEnv Int Ann ()) (POut Int Ann) (PState 
     )
 
 instance MonadPretty Int Ann () DocM
+-}
 
 instance Measure Int () DocM where
   measure = return . runIdentity . measure
@@ -79,30 +86,39 @@ type TEnv = Map Text Text
 tEnv0 :: TEnv
 tEnv0 = Map.empty
 
-  {-
+
 runDocM :: PEnv Int Ann () -> PrecEnv Ann -> TEnv -> PState Int () -> DocM a -> Maybe (PState Int (), POut Int Ann, a)
 runDocM e pe te s d = (\(a,s',o) -> (s',o,a)) <$> runReaderT (runRWST (runPrecT pe $ unDocM d) e s) te
--}
+
+  {-
 runDocM :: PEnv Int Ann () -> PState Int () -> DocM a -> Maybe (PState Int (), POut Int Ann, a)
 runDocM e s d = (\(a,s',o) -> (s',o,a)) <$> runRWST (unDocM d) e s
+-}
+
+askTEnv :: DocM TEnv
+askTEnv = DocM $ lift $ lift ask
+
+localTEnv :: (TEnv -> TEnv) -> DocM a -> DocM a
+localTEnv f = DocM . mapPrecT (mapRWST (local f)) . unDocM
 
 -- Doc
 type Doc = DocM ()
 
-  {-
 execDoc :: Doc -> POut Int Ann
 execDoc d =
   let rM = runDocM env0 precEnv0 tEnv0 state0 d
   in case rM of
     Nothing -> PAtom $ AChunk $ CText "<internal pretty printing error>"
     Just (_, o, ()) -> o
--}
+
+  {-
 execDoc :: Doc -> POut Int Ann
 execDoc d =
   let rM = runDocM env0 state0 d
   in case rM of
     Nothing -> PAtom $ AChunk $ CText "<internal pretty printing error>"
     Just (_, o, ()) -> o
+-}
 
 instance IsString Doc where
   fromString = text . fromString
@@ -130,7 +146,7 @@ ppSystem :: Pretty a => System a -> Doc
 ppSystem = ppListSystem . toList
 
 mpconcat :: (MonadPretty w ann fmt m) => [m ()] -> m ()
-mpconcat [] = empty
+mpconcat []     = return ()
 mpconcat (e:es) = e >> (mpconcat es)
 
 ppListSystem :: Pretty a => [(Face , a)] -> Doc
@@ -150,24 +166,29 @@ ppDecls ds = case ds of
 
 ppTer :: Ter -> Doc
 ppTer v = case v of
-  U                 -> char 'U'
+  U                 -> annotate TCtor $ char 'U'
   App e0 e1         -> grouped $ ppTer e0 >> newline >> ppTer1 e1
-  Pi e0             -> grouped $ text "Pi" >> space 1 >> ppTer e0
-  Lam x t e         -> grouped $ do
-                         annotate LAM_ANN (char '\\')
+  Pi e0             -> grouped $ (annotate TCtor $ text "Pi") >> space 1 >> ppTer e0
+  Lam x t e         -> localTEnv (Map.insert (T.pack x) "Bound") $ grouped $ do
+                         annotate Ctor (char '\\')
                          W.parens $ do
                            (text $ T.pack x)
                            space 1 >> colon >> space 1
                            ppTer t
                          space 1
-                         text "->"
+                         (annotate Ctor $ text "->")
                          nest 2 $ do newline; ppTer e
-  Fst e             -> ppTer1 e >> text ".1"
-  Snd e             -> ppTer1 e >> text ".2"
-  Sigma e0          -> grouped $ text "Sigma" >> space 1 >> ppTer1 e0
-  Pair e0 e1        -> grouped $ W.parens (ppTer e0 >> comma >> ppTer e1)
-  Where e d         -> ppTer e >> newline >> text "where" >> newline >> ppDecls d
-  Var x             -> text $ T.pack x
+  Fst e             -> ppTer1 e >> (annotate Elim $ text ".1")
+  Snd e             -> ppTer1 e >> (annotate Elim $ text ".2")
+  Sigma e0          -> grouped $ (annotate TCtor $ (text "Sigma")) >> space 1 >> ppTer1 e0
+  Pair e0 e1        -> grouped $ (annotate Ctor $ text "(") >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> (annotate Ctor $ text ")")
+  Where e d         -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> ppDecls d
+  {-
+  Var x             -> do tEnv <- askTEnv
+                          let tt = tEnv Map.! T.pack x
+                          annotate (VarAnn tt) $ text $ T.pack x
+-}
+  Var x             -> annotate (VarAnn "Normal") $ text $ T.pack x
   Con c es          -> (text $ T.pack c) >> space 1 >> ppTers es
   PCon c a es phis  -> grouped $ do
                          text $ T.pack c
@@ -176,30 +197,30 @@ ppTer v = case v of
                          space 1
                          ppTers es
                          space 1
-                         hsep $ map ((char '@' >> space 1 >> ) . ppFormula) phis
+                         hsep $ map (((annotate Ctor $ char '@') >> space 1 >> ) . ppFormula) phis
   Split f _ _ _     -> text $ T.pack f
   Sum _ n _         -> text $ T.pack n
   HSum _ n _        -> text $ T.pack n
-  Undef{}           -> text "undefined"
+  Undef{}           -> (annotate Kwd $ text "undefined")
   Hole{}            -> text "?"
-  PathP e0 e1 e2    -> text "PathP" >> space 1 >> ppTers [e0,e1,e2]
-  PLam i e          -> char '<' >> (text $ T.pack (show i)) >> char '>' >> space 1 >> ppTer e
-  AppFormula e phi  -> ppTer1 e >> space 1 >> char '@' >> space 1 >> ppFormula phi
-  Comp e t ts       -> text "comp" >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
-  Fill e t ts       -> text "fill" >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
-  Glue a ts         -> text "Glue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
-  GlueElem a ts     -> text "glue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
-  UnGlueElem a ts   -> text "unglue" >> space 1 >> ppTer a >> space 1 >> ppSystem ts
-  Id a u v          -> grouped $ text "Id" >> space 1 >> ppTers [a,u,v]
-  IdPair b ts       -> text "IdC" >> space 1 >> ppTer b >> space 1 >> ppSystem ts
-  IdJ a t c d x p   -> grouped $ text "IdJ" >> space 1 >> ppTers [a,t,c,d,x,p] 
+  PathP e0 e1 e2    -> (annotate Kwd $ text "PathP") >> space 1 >> ppTers [e0,e1,e2]
+  PLam i e          -> localTEnv (Map.insert (T.pack $ show i) "Path") $ (annotate Ctor $ char '<') >> (text $ T.pack (show i)) >> (annotate Ctor $ char '>') >> space 1 >> ppTer e
+  AppFormula e phi  -> ppTer1 e >> space 1 >> (annotate Ctor $ char '@') >> space 1 >> ppFormula phi
+  Comp e t ts       -> (annotate Kwd $ text "comp") >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
+  Fill e t ts       -> (annotate Kwd $ text "fill") >> space 1 >> ppTers [e,t] >> space 1 >> ppSystem ts
+  Glue a ts         -> (annotate Kwd $ text "Glue") >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  GlueElem a ts     -> (annotate Kwd $ text "glue") >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  UnGlueElem a ts   -> (annotate Kwd $ text "unglue") >> space 1 >> ppTer a >> space 1 >> ppSystem ts
+  Id a u v          -> grouped $ (annotate Kwd $ text "Id") >> space 1 >> ppTers [a,u,v]
+  IdPair b ts       -> (annotate Kwd $ text "IdC") >> space 1 >> ppTer b >> space 1 >> ppSystem ts
+  IdJ a t c d x p   -> grouped $ (annotate Kwd $ text "IdJ") >> space 1 >> ppTers [a,t,c,d,x,p] 
 
 ppTers :: [Ter] -> Doc
 ppTers = vsep . map ppTer1
 
 ppTer1 :: Ter -> Doc
 ppTer1 t = case t of
-  U        -> char 'U'
+  U        -> annotate TCtor $ char 'U'
   Con c [] -> text $ T.pack c
   Var{}    -> ppTer t
   Undef{}  -> ppTer t
@@ -216,39 +237,39 @@ instance Pretty Ter where
 
 ppVal :: Val -> Doc
 ppVal v = case v of
-  VU                     -> char 'U'
+  VU                     -> annotate TCtor $ char 'U'
   Ter t@Sum{} rho        -> ppTer t >> space 1 >> ppEnv False rho 
   Ter t@HSum{} rho       -> ppTer t >> space 1 >> ppEnv False rho
   Ter t@Split{} rho      -> ppTer t >> space 1 >> ppEnv False rho
   Ter t rho              -> ppTer t >> space 1 >> ppEnv True rho 
   VCon c us              -> (text $ T.pack c) >> space 1 >> ppVals us
-  VPCon c a us phis      -> (text $ T.pack c) >> space 1 >> braces (ppVal a) >> space 1 >> ppVals us >> hsep (map ((char '@' >> space 1 >>) . ppFormula) phis)
-  VHComp v0 v1 vs        -> text "hComp" >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
+  VPCon c a us phis      -> (text $ T.pack c) >> space 1 >> braces (ppVal a) >> space 1 >> ppVals us >> hsep (map (((annotate Ctor $ char '@') >> space 1 >>) . ppFormula) phis)
+  VHComp v0 v1 vs        -> (annotate Kwd $ text "hComp") >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
   VPi a l@(VLam x t b)
-    | "_" `isPrefixOf` x -> ppVal1 a >> space 1 >> text "->" >> space 1 >> ppVal1 b
+    | "_" `isPrefixOf` x -> ppVal1 a >> space 1 >> (annotate Ctor $ text "->") >> space 1 >> ppVal1 b
     | otherwise          -> char '(' >> ppLam (VPi a l)
-  VPi a b                -> text "Pi" >> space 1 >> ppVals [a,b] 
-  VPair u v              -> W.parens (ppVal u >> comma >> ppVal v)
-  VSigma u v             -> text "Sigma" >> space 1 >> ppVals [u,v]
+  VPi a b                -> (annotate TCtor $ text "Pi") >> space 1 >> ppVals [a,b] 
+  VPair u v              -> (annotate Ctor $ text "(") >> ppVal u >> (annotate Ctor comma) >> ppVal v >> (annotate Ctor ")")
+  VSigma u v             -> (annotate TCtor $ text "Sigma") >> space 1 >> ppVals [u,v]
   VApp u v               -> ppVal u >> space 1 >> ppVal1 v
   VLam{}                 -> text "\\(" >> ppLam v
-  VPLam{}                -> char '<' >> ppPLam v
+  VPLam{}                -> (annotate Ctor $ char '<') >> ppPLam v
   VSplit u v             -> ppVal u >> space 1 >> ppVal1 v
   VVar x _               -> text $ T.pack x
   VOpaque x _            -> text $ T.pack x
-  VFst u                 -> ppVal1 u >> space 1 >> text ".1"
-  VSnd u                 -> ppVal1 u >> space 2 >> text ".2"
-  VPathP v0 v1 v2        -> text "PathP" >> space 1 >> ppVals [v0,v1,v2]
-  VAppFormula v phi      -> ppVal v >> space 1 >> char '@' >> ppFormula phi
-  VComp v0 v1 vs         -> text "comp" >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
-  VGlue a ts             -> text "Glue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
-  VGlueElem a ts         -> text "glue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
-  VUnGlueElem a ts       -> text "unglue" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
-  VUnGlueElemU v b es    -> text "unglue U" >> space 1 >> ppVals [v,b] >> ppSystem es
-  VCompU a ts            -> text "comp (<_> U)" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
-  VId a u v              -> text "Id" >> space 1 >> ppVals [a,u,v]
-  VIdPair b ts           -> text "IdC" >> space 1 >> ppVal1 b >> ppSystem ts
-  VIdJ a t c d x p       -> text "IdJ" >> space 1 >> ppVals [a,t,c,d,x,p]
+  VFst u                 -> ppVal1 u >> space 1 >> (annotate Elim ".1")
+  VSnd u                 -> ppVal1 u >> space 2 >> (annotate Elim ".2")
+  VPathP v0 v1 v2        -> (annotate Kwd $ text "PathP") >> space 1 >> ppVals [v0,v1,v2]
+  VAppFormula v phi      -> ppVal v >> space 1 >> (annotate Ctor $ char '@') >> ppFormula phi
+  VComp v0 v1 vs         -> (annotate Kwd $ text "comp") >> space 1 >> ppVals [v0,v1] >> space 1 >> ppSystem vs
+  VGlue a ts             -> (annotate Kwd $ text "Glue") >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VGlueElem a ts         -> (annotate Kwd $ text "glue") >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VUnGlueElem a ts       -> (annotate Kwd $ text "unglue") >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VUnGlueElemU v b es    -> (annotate Kwd $ text "unglue U") >> space 1 >> ppVals [v,b] >> ppSystem es
+  VCompU a ts            -> (annotate Kwd $ text "comp") >>  text "(" >> (annotate Ctor $ text "<_>") >> text "U)" >> space 1 >> ppVal1 a >> space 1 >> ppSystem ts
+  VId a u v              -> (annotate Kwd $ text "Id") >> space 1 >> ppVals [a,u,v]
+  VIdPair b ts           -> (annotate Kwd $ text "IdC") >> space 1 >> ppVal1 b >> ppSystem ts
+  VIdJ a t c d x p       -> (annotate Kwd $ text "IdJ") >> space 1 >> ppVals [a,t,c,d,x,p]
 
 ppVals :: [Val] -> Doc
 ppVals = hsep . map ppVal1
@@ -290,29 +311,35 @@ ppEnv b e =
 ppLam :: Val -> Doc
 ppLam e = case e of
   VLam x t a@(VLam _ t' _)
-    | t == t'   -> (text $ T.pack x) >> space 1 >> ppLam a
-    | otherwise -> (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal a
+    | t == t'   -> localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> space 1 >> ppLam a
+    | otherwise -> localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> (annotate Ctor $ text "->") >> space 1 >> ppVal a
   VPi _ (VLam x t a@(VPi _ (VLam _ t' _)))
-    | t == t'   -> (text $ T.pack x) >> space 1 >> ppLam a
-    | otherwise -> (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal a
+    | t == t'   -> localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> space 1 >> ppLam a
+    | otherwise -> localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> (annotate Ctor $ text "->") >> space 1 >> ppVal a
   VLam x t e ->
-    (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> text "->" >> space 1 >> ppVal e
+    localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> space 1 >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >> (annotate Ctor $ text "->") >> space 1 >> ppVal e
   VPi _ (VLam x t e) ->
-    (text $ T.pack x) >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >>  text "->" >> space 1 >> ppVal e
+    localTEnv (Map.insert (T.pack x) "Normal") $ (text $ T.pack x) >> colon >> space 1 >> ppVal t >> char ')' >> space 1 >>  (annotate Ctor $ text "->") >> space 1 >> ppVal e
   _ -> ppVal e
 
 ppPLam :: Val -> Doc
 ppPLam e = case e of
-  VPLam i a@VPLam{} -> (text $ T.pack (show i)) >> space 1 >> ppPLam a
-  VPLam i a -> (text $ T.pack (show i)) >> char '>' >> space 1 >> ppVal a
+  VPLam i a@VPLam{} -> localTEnv (Map.insert (T.pack (show i)) "Normal") $ (text $ T.pack (show i)) >> space 1 >> ppPLam a
+  VPLam i a -> localTEnv (Map.insert (T.pack (show i)) "Normal") $ (text $ T.pack (show i)) >> (annotate Ctor $ char '>') >> space 1 >> ppVal a
   _ -> ppVal e
 
 instance Pretty Val where
   pretty = ppVal
 
 toSGR :: Ann -> [SGR]
-toSGR LAM_ANN = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
-toSGR _ = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
+toSGR Kwd     = [SetConsoleIntensity BoldIntensity, SetUnderlining SingleUnderline] 
+toSGR Ctor    = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Magenta]
+toSGR Elim    = [SetConsoleIntensity BoldIntensity, SetColor Foreground Dull Magenta]
+toSGR TCtor   = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
+toSGR HoleAnn = [SetColor Background Vivid Cyan]
+toSGR (VarAnn s) = case s of
+  "Path" -> [SetItalicized True, SetColor Foreground Vivid Cyan]
+  _      -> [SetItalicized True, SetColor Foreground Vivid Blue] 
   
 updateColor :: forall ann . StateT [Ann] IO ()
 updateColor =
@@ -328,5 +355,4 @@ renderAnnotation :: Ann -> StateT [Ann] IO () -> StateT [Ann] IO ()
 renderAnnotation a o = openTag a >> o >> closeTag a
 
 dumpVal :: Val -> IO ()
--- dumpVal = dumpDoc toSGR renderAnnotation . execDoc . pretty
-dumpVal v = dumpDoc toSGR renderAnnotation $ execDoc $ pretty v 
+dumpVal = dumpDoc toSGR renderAnnotation . execDoc . pretty 
