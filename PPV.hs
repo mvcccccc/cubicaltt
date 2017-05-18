@@ -49,7 +49,7 @@ mpconcat []     = return ()
 mpconcat (e:es) = e >> (mpconcat es)
 
 str :: (MonadPretty w ann fmt m) => [Char] -> m ()
-str = text . T.pack 
+str = text . T.pack
 --------------------------------------------------------------------------------
 -- | setting up
 
@@ -57,16 +57,17 @@ data Ann = Kwd | HoleAnn | VarAnn Text | Ctor | Elim | TCtor
   deriving (Eq, Ord, Show)
 
 toSGR :: Ann -> [SGR]
-toSGR Kwd        = [SetConsoleIntensity BoldIntensity, SetUnderlining SingleUnderline] 
+toSGR Kwd        = [SetConsoleIntensity BoldIntensity, SetUnderlining SingleUnderline]
 toSGR Ctor       = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Magenta]
 toSGR Elim       = [SetConsoleIntensity BoldIntensity, SetColor Foreground Dull Magenta]
 toSGR TCtor      = [SetConsoleIntensity BoldIntensity, SetColor Foreground Vivid Red]
 toSGR HoleAnn    = [SetColor Background Vivid Cyan]
 toSGR (VarAnn s) = case s of
-  "Path" -> [SetItalicized True, SetColor Foreground Vivid Cyan]
-  _      -> [SetItalicized True, SetColor Foreground Vivid Blue] 
-  
-updateColor :: forall ann . StateT [Ann] IO ()
+  "Path"   -> [SetItalicized True, SetColor Foreground Vivid Cyan]
+  "Global" -> [SetItalicized False, SetColor Foreground Vivid Green]
+  _        -> [SetItalicized True, SetColor Foreground Vivid Blue]
+
+updateColor :: StateT [Ann] IO ()
 updateColor =
   lift . setSGR =<< mconcat . map toSGR . reverse <$> get
 
@@ -104,7 +105,7 @@ askTEnv = DocM $ lift $ lift ask
 
 localTEnv :: (TEnv -> TEnv) -> DocM a -> DocM a
 localTEnv f = DocM . mapPrecT (mapRWST (local f)) . unDocM
-  
+
 --------------------------------------------------------------------------------
 -- | Doc
 
@@ -123,7 +124,7 @@ instance IsString Doc where
 instance Monoid Doc where
   mempty = return ()
   mappend = (>>)
-  
+
 class Pretty a where
   pretty :: a -> Doc
 
@@ -134,7 +135,7 @@ instance Pretty Text where
   pretty = text . T.pack . show
 
 --------------------------------------------------------------------------------
--- | pp functions 
+-- | pp functions
 
 ppFormula :: Formula -> Doc
 ppFormula phi = case phi of
@@ -181,8 +182,9 @@ ppTer v = case v of
   Pair e0 e1        -> grouped $ annotate Ctor (char '(') >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> annotate Ctor (char ')')
   Where e d         -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> ppDecls d
   Var x             -> do tEnv <- askTEnv
-                          let tt = tEnv Map.! T.pack x
-                          annotate (VarAnn tt) (str x)
+                          case Map.lookup (T.pack x) tEnv of
+                            Nothing -> annotate (VarAnn "Global") (str x)
+                            Just tt -> annotate (VarAnn tt) (str x)
 --  Var x             -> annotate (VarAnn "B") $ text $ T.pack x
   Con c es          -> str c >+> ppTers es
   PCon c a es phis  -> grouped $ do
@@ -213,7 +215,7 @@ ppTer v = case v of
   UnGlueElem a ts   -> annotate Kwd "unglue" >+> ppTer a >+> ppSystem ts
   Id a u v          -> grouped $ (annotate Kwd "Id") >+> ppTers [a,u,v]
   IdPair b ts       -> annotate Kwd (text "IdC") >+> ppTer b >+> ppSystem ts
-  IdJ a t c d x p   -> grouped $ (annotate Kwd "IdJ") >+> ppTers [a,t,c,d,x,p] 
+  IdJ a t c d x p   -> grouped $ (annotate Kwd "IdJ") >+> ppTers [a,t,c,d,x,p]
 
 ppTers :: [Ter] -> Doc
 ppTers = vsep . map ppTer1
@@ -238,17 +240,17 @@ instance Pretty Ter where
 ppVal :: Val -> Doc
 ppVal v = case v of
   VU                     -> annotate TCtor (char 'U')
-  Ter t@Sum{} rho        -> ppTer t >+> ppEnv False rho 
+  Ter t@Sum{} rho        -> ppTer t >+> ppEnv False rho
   Ter t@HSum{} rho       -> ppTer t >+> ppEnv False rho
   Ter t@Split{} rho      -> ppTer t >+> ppEnv False rho
-  Ter t rho              -> ppTer t >+> ppEnv True rho 
+  Ter t rho              -> ppTer t >+> ppEnv True rho
   VCon c us              -> str c >+> ppVals us
   VPCon c a us phis      -> str c >+> braces (ppVal a) >+> ppVals us >> hsep (map (((annotate Ctor $ char '@') >> space 1 >>) . ppFormula) phis)
   VHComp v0 v1 vs        -> annotate Kwd (text "hComp") >+> ppVals [v0,v1] >+> ppSystem vs
   VPi a l@(VLam x t b)
     | "_" `isPrefixOf` x -> ppVal1 a >+> annotate Ctor (text "->") >+> ppVal1 b
     | otherwise          -> char '(' >> ppLam (VPi a l)
-  VPi a b                -> annotate TCtor (text "Pi") >+> ppVals [a,b] 
+  VPi a b                -> annotate TCtor (text "Pi") >+> ppVals [a,b]
   VPair u v              -> annotate Ctor (text "(") >> ppVal u >> annotate Ctor comma >> ppVal v >> annotate Ctor ")"
   VSigma u v             -> annotate TCtor (text "Sigma") >+> ppVals [u,v]
   VApp u v               -> ppVal u >+> ppVal1 v
@@ -332,4 +334,4 @@ instance Pretty Val where
   pretty = ppVal
 
 dumpVal :: Val -> IO ()
-dumpVal = dumpDoc toSGR renderAnnotation . execDoc . pretty 
+dumpVal = dumpDoc toSGR renderAnnotation . execDoc . pretty
