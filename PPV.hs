@@ -200,14 +200,14 @@ ppTer v = case v of
   Pair e0 e1        -> expr $ annotate Ctor (char '(') >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> annotate Ctor (char ')')
   Where e d         -> case d of
     --MutualDecls _ defs -> {-map \x (localTEnv (Map.insert (T.pack x) "Bound")) $-} ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> (hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs])
-    MutualDecls _ defs -> localTEnv (\env -> foldr (\x -> Map.insert x "B") env [T.pack x | (x,(_,d)) <- defs]) >> expr $ do 
+    MutualDecls _ defs -> localTEnv (\env -> foldr (\x -> Map.insert x "B") env [T.pack x | (x,(_,d)) <- defs]) $ expr $ do 
                                ppTer e
                                newline
                                annotate Kwd $ text "where"
                                newline
                                hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
-    OpaqueDecl i       -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "opaque" >+> str i
-    TransparentDecl i  -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent" >+> str i
+    OpaqueDecl i       -> localTEnv (Map.insert (T.pack $ show i) "B") $ ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "opaque" >+> str i
+    TransparentDecl i  -> localTEnv (Map.insert (T.pack $ show i) "B") $ ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent" >+> str i
     TransparentAllDecl -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent_all"
   -- Where e d         -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> ppDecls d
   Var x             -> do tEnv <- askTEnv
