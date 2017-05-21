@@ -111,6 +111,22 @@ localTEnv f = DocM . mapPrecT (mapRWST (local f)) . unDocM
 
 type Doc = DocM ()
 
+env0 :: (Num w) => PEnv w ann ()
+env0 = PEnv
+  { maxWidth = 80
+  , maxRibbon = 60
+  , layout = Break
+  , failure = CantFail
+  , nesting = 0
+  , formatting = mempty
+  , formatAnn = const mempty
+  }
+
+state0 :: PState Int ()
+state0 = PState
+  { curLine = []
+  }
+  
 execDoc :: Doc -> POut Int Ann
 execDoc d =
   let rM = runDocM env0 precEnv0 tEnv0 state0 d
@@ -155,19 +171,21 @@ ppListSystem ts =
                         | (alpha,u) <- ts ]) >>
   text " ]"
 
+  {-
 ppDecls :: Decls -> Doc
 ppDecls ds = case ds of
-  MutualDecls _ defs -> hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
+  MutualDecls _ defs -> hsep $ punctuate comma [localTEnv (Map.insert (T.pack x) "Bound") $ str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
   OpaqueDecl i       -> text "opaque" >+> str i
   TransparentDecl i  -> text "transparent" >+> str i
   TransparentAllDecl -> text "transparent_all"
+-}
 
 ppTer :: Ter -> Doc
 ppTer v = case v of
   U                 -> annotate TCtor $ char 'U'
-  App e0 e1         -> grouped $ ppTer e0 >> newline >> ppTer1 e1
-  Pi e0             -> grouped $ annotate TCtor "Pi" >+> ppTer e0
-  Lam x t e         -> localTEnv (Map.insert (T.pack x) "Bound") $ grouped $ do
+  App e0 e1         -> expr $ ppTer e0 >> newline >> ppTer1 e1
+  Pi e0             -> expr $ annotate TCtor "Pi" >+> ppTer e0
+  Lam x t e         -> localTEnv (Map.insert (T.pack x) "B") $ expr $ do
                          annotate Ctor (char '\\')
                          W.parens $ do
                            str x
@@ -178,16 +196,27 @@ ppTer v = case v of
                          nest 2 $ do newline; ppTer e
   Fst e             -> ppTer1 e >> annotate Elim ".1"
   Snd e             -> ppTer1 e >> annotate Elim ".2"
-  Sigma e0          -> grouped $ annotate TCtor "Sigma" >+> ppTer1 e0
-  Pair e0 e1        -> grouped $ annotate Ctor (char '(') >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> annotate Ctor (char ')')
-  Where e d         -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> ppDecls d
+  Sigma e0          -> expr $ annotate TCtor "Sigma" >+> ppTer1 e0
+  Pair e0 e1        -> expr $ annotate Ctor (char '(') >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> annotate Ctor (char ')')
+  Where e d         -> case d of
+    --MutualDecls _ defs -> {-map \x (localTEnv (Map.insert (T.pack x) "Bound")) $-} ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> (hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs])
+    MutualDecls _ defs -> localTEnv (\env -> foldr (\x -> Map.insert x "B") env [T.pack x | (x,(_,d)) <- defs]) >> expr $ do 
+                               ppTer e
+                               newline
+                               annotate Kwd $ text "where"
+                               newline
+                               hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
+    OpaqueDecl i       -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "opaque" >+> str i
+    TransparentDecl i  -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent" >+> str i
+    TransparentAllDecl -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent_all"
+  -- Where e d         -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> ppDecls d
   Var x             -> do tEnv <- askTEnv
                           case Map.lookup (T.pack x) tEnv of
                             Nothing -> annotate (VarAnn "Global") (str x)
                             Just tt -> annotate (VarAnn tt) (str x)
 --  Var x             -> annotate (VarAnn "B") $ text $ T.pack x
   Con c es          -> str c >+> ppTers es
-  PCon c a es phis  -> grouped $ do
+  PCon c a es phis  -> expr $ do
                          str c
                          space 1
                          braces $ ppTer a
@@ -201,7 +230,7 @@ ppTer v = case v of
   Undef{}           -> annotate Kwd "undefined"
   Hole{}            -> text "?"
   PathP e0 e1 e2    -> (annotate Kwd "PathP") >+> ppTers [e0,e1,e2]
-  PLam i e          -> localTEnv (Map.insert (T.pack $ show i) "P") $ grouped $ do
+  PLam i e          -> localTEnv (Map.insert (T.pack $ show i) "Path") $ expr $ do
                          annotate Ctor $ char '<'
                          str (show i)
                          annotate Ctor $ char '>'
@@ -213,9 +242,9 @@ ppTer v = case v of
   Glue a ts         -> annotate Kwd "Glue" >+> ppTer a >+> ppSystem ts
   GlueElem a ts     -> annotate Kwd "glue" >+> ppTer a >+> ppSystem ts
   UnGlueElem a ts   -> annotate Kwd "unglue" >+> ppTer a >+> ppSystem ts
-  Id a u v          -> grouped $ (annotate Kwd "Id") >+> ppTers [a,u,v]
+  Id a u v          -> expr $ (annotate Kwd "Id") >+> ppTers [a,u,v]
   IdPair b ts       -> annotate Kwd (text "IdC") >+> ppTer b >+> ppSystem ts
-  IdJ a t c d x p   -> grouped $ (annotate Kwd "IdJ") >+> ppTers [a,t,c,d,x,p]
+  IdJ a t c d x p   -> expr $ (annotate Kwd "IdJ") >+> ppTers [a,t,c,d,x,p]
 
 ppTers :: [Ter] -> Doc
 ppTers = vsep . map ppTer1
