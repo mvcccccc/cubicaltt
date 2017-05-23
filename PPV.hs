@@ -166,7 +166,7 @@ ppListSystem :: Pretty a => [(Face , a)] -> Doc
 ppListSystem [] = text "[]"
 ppListSystem ts =
   text "[ " >>
-  (mpconcat $ punctuate (text ", ")
+  (mpconcat $ intersperse (text ", ")
                         [ str (showFace alpha ++ " -> ") >> pretty u
                         | (alpha,u) <- ts ]) >>
   text " ]"
@@ -174,7 +174,7 @@ ppListSystem ts =
   {-
 ppDecls :: Decls -> Doc
 ppDecls ds = case ds of
-  MutualDecls _ defs -> hsep $ punctuate comma [localTEnv (Map.insert (T.pack x) "Bound") $ str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
+  MutualDecls _ defs -> hsep $ intersperse comma [localTEnv (Map.insert (T.pack x) "Bound") $ str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
   OpaqueDecl i       -> text "opaque" >+> str i
   TransparentDecl i  -> text "transparent" >+> str i
   TransparentAllDecl -> text "transparent_all"
@@ -199,13 +199,13 @@ ppTer v = case v of
   Sigma e0          -> expr $ annotate TCtor "Sigma" >+> ppTer1 e0
   Pair e0 e1        -> expr $ annotate Ctor (char '(') >> ppTer e0 >> annotate Ctor comma >> ppTer e1 >> annotate Ctor (char ')')
   Where e d         -> case d of
-    --MutualDecls _ defs -> {-map \x (localTEnv (Map.insert (T.pack x) "Bound")) $-} ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> (hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs])
+    --MutualDecls _ defs -> {-map \x (localTEnv (Map.insert (T.pack x) "Bound")) $-} ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> (hsep $ intersperse comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs])
     MutualDecls _ defs -> localTEnv (\env -> foldr (\x -> Map.insert x "B") env [T.pack x | (x,(_,d)) <- defs]) $ expr $ do 
                                ppTer e
                                newline
                                annotate Kwd $ text "where"
                                newline
-                               hsep $ punctuate comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
+                               hsep $ intersperse comma [str x >+> equals >+> ppTer d | (x,(_,d)) <- defs]
     OpaqueDecl i       -> localTEnv (Map.insert (T.pack $ show i) "B") $ ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "opaque" >+> str i
     TransparentDecl i  -> localTEnv (Map.insert (T.pack $ show i) "B") $ ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent" >+> str i
     TransparentAllDecl -> ppTer e >> newline >> (annotate Kwd $ text "where") >> newline >> text "transparent_all"

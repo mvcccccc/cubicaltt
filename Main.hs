@@ -146,7 +146,7 @@ loop flags f names tenv = do
                 let e = mod $ E.eval (TC.env tenv) body
 
                 -- Let's not crash if the evaluation raises an error:
-                liftIO $ catch (putStrLn msg >> (dumpVal e) >> putStrLn "" >> (putStrLn (msg ++ shrink (show e))))
+                liftIO $ catch (putStrLn msg >> (dumpVal e) >> putStrLn "")
                                -- (writeFile "examples/nunivalence3.ctt" (show e))
                                (\e -> putStrLn ("Exception: " ++
                                                 show (e :: SomeException)))
